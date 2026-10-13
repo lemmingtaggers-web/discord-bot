@@ -27,7 +27,11 @@ EPHEMERAL = 64
 
 
 def MakeResponse(Content="", Ephemeral=False, Embeds=None):
-    Data = {"allowed_mentions": {"parse": []}}
+    Data = {
+        "allowed_mentions": {
+            "parse": ["everyone"]
+        }
+    }
 
     if Content:
         Data["content"] = str(Content)[:2000]
