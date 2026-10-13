@@ -1,10 +1,7 @@
-
 import os
-import json
 import logging
 import requests
 
-from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
@@ -16,24 +13,18 @@ DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_API = "https://discord.com/api/v10"
 
-# Discord interaction callback types
 PING = 1
 APPLICATION_COMMAND = 2
 CHANNEL_MESSAGE = 4
 DEFERRED_CHANNEL_MESSAGE = 5
-
-EPHEMERAL = 1 << 6
-
-
-def json_response(data, status=200):
-    return jsonify(data), status
+EPHEMERAL = 64
 
 
-def interaction_response(content, ephemeral=False, embeds=None):
-    data = {
-        "content": str(content)[:2000],
-        "allowed_mentions": {"parse": []}
-    }
+def response(content, ephemeral=False, embeds=None):
+    data = {"allowed_mentions": {"parse": []}}
+
+    if content:
+        data["content"] = str(content)[:2000]
 
     if ephemeral:
         data["flags"] = EPHEMERAL
@@ -44,31 +35,9 @@ def interaction_response(content, ephemeral=False, embeds=None):
     return {"type": CHANNEL_MESSAGE, "data": data}
 
 
-def get_options(interaction):
-    """Convert Discord command options into a dictionary."""
-    result = {}
-
-    for option in interaction.get("data", {}).get("options", []):
-        result[option["name"]] = option.get("value")
-
-    return result
-
-
-def is_admin(interaction):
-    """Check the invoking member's Administrator permission."""
-    member = interaction.get("member") or {}
-    permissions = member.get("permissions", "0")
-
-    try:
-        return bool(int(permissions) & (1 << 3))
-    except (ValueError, TypeError):
-        return False
-
-
-def verify_discord_request():
-    """Verify Discord's Ed25519 signature against the raw request body."""
+def verify_signature():
     if not DISCORD_PUBLIC_KEY:
-        app.logger.error("DISCORD_PUBLIC_KEY is not configured.")
+        app.logger.error("DISCORD_PUBLIC_KEY is missing")
         return False
 
     signature = request.headers.get("X-Signature-Ed25519", "")
@@ -78,8 +47,8 @@ def verify_discord_request():
         return False
 
     try:
-        verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
-        verify_key.verify(
+        key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
+        key.verify(
             timestamp.encode("utf-8") + request.get_data(),
             bytes.fromhex(signature)
         )
@@ -88,27 +57,42 @@ def verify_discord_request():
         return False
 
 
-def edit_original_response(interaction, content):
-    """Update an acknowledged interaction response."""
-    app_id = interaction.get("application_id")
-    token = interaction.get("token")
+def get_options(interaction):
+    return {
+        item["name"]: item.get("value")
+        for item in interaction.get("data", {}).get("options", [])
+    }
 
-    if not app_id or not token:
+
+def is_admin(interaction):
+    try:
+        permissions = int(
+            interaction.get("member", {}).get("permissions", "0")
+        )
+        return bool(permissions & 8)
+    except (TypeError, ValueError):
         return False
 
+
+def edit_original(interaction, content):
     try:
-        response = requests.patch(
-            f"{DISCORD_API}/webhooks/{app_id}/{token}/messages/@original",
+        url = (
+            f"{DISCORD_API}/webhooks/"
+            f"{interaction['application_id']}/"
+            f"{interaction['token']}/messages/@original"
+        )
+        result = requests.patch(
+            url,
             json={
                 "content": content[:2000],
                 "allowed_mentions": {"parse": []}
             },
             timeout=8
         )
-        response.raise_for_status()
+        result.raise_for_status()
         return True
-    except requests.RequestException:
-        app.logger.exception("Failed to update interaction response.")
+    except (requests.RequestException, KeyError):
+        app.logger.exception("Could not update interaction response")
         return False
 
 
@@ -124,84 +108,80 @@ def home():
 def test():
     return jsonify({
         "status": "success",
-        "message": "Discord bot API is working."
+        "message": "API is working"
     })
 
 
-# Support either path if your Vercel routing strips the /api prefix.
-@app.route("/api/interactions", methods=["POST"])
-@app.route("/interactions", methods=["POST"])
+# Both routes are supported for different Vercel routing setups.
+@app.route("/api/interactions", methods=["GET", "POST"])
+@app.route("/interactions", methods=["GET", "POST"])
 def interactions():
-    # Never process unverified Discord requests.
-    if not verify_discord_request():
+    # Browser health check. Discord uses signed POST requests.
+    if request.method == "GET":
+        return jsonify({
+            "status": "online",
+            "message": "Discord interactions endpoint is reachable"
+        }), 200
+
+    # Never process unsigned Discord interactions.
+    if not verify_signature():
         return jsonify({"error": "Invalid Discord signature"}), 401
 
-    try:
-        interaction = request.get_json(force=True)
-    except Exception:
-        return jsonify({"error": "Invalid JSON"}), 400
+    interaction = request.get_json(silent=True)
 
     if not isinstance(interaction, dict):
-        return jsonify({"error": "Invalid interaction"}), 400
+        return jsonify({"error": "Invalid JSON"}), 400
 
     interaction_type = interaction.get("type")
 
-    # Discord sends this when validating your endpoint.
+    # Discord endpoint verification handshake.
     if interaction_type == PING:
         return jsonify({"type": PING})
 
     if interaction_type != APPLICATION_COMMAND:
-        return jsonify({"error": "Unsupported interaction type"}), 400
+        return jsonify({"error": "Unsupported interaction"}), 400
 
     command = interaction.get("data", {}).get("name", "").lower()
     options = get_options(interaction)
 
-    # /ping
     if command == "ping":
-        return jsonify(interaction_response("Pong! The bot is online."))
+        return jsonify(response("Pong! The bot is online."))
 
-    # /say message:<text>
     if command == "say":
         message = options.get("message", "")
-
         if not isinstance(message, str) or not message.strip():
-            return jsonify(interaction_response(
-                "Please provide a message.", ephemeral=True
+            return jsonify(response(
+                "Enter a message.", ephemeral=True
             ))
+        return jsonify(response(message))
 
-        return jsonify(interaction_response(message[:2000]))
-
-    # /embed title:<text> description:<text> color:<hex>
     if command == "embed":
         title = options.get("title", "Announcement")
         description = options.get("description", "")
         color_text = options.get("color", "#5865F2")
 
         if not isinstance(title, str) or not isinstance(description, str):
-            return jsonify(interaction_response(
-                "Invalid embed title or description.", ephemeral=True
-            ))
+            return jsonify(response("Invalid embed text.", ephemeral=True))
 
         if not description.strip():
-            return jsonify(interaction_response(
-                "Please provide an embed description.", ephemeral=True
+            return jsonify(response(
+                "Enter an embed description.", ephemeral=True
             ))
 
         if not isinstance(color_text, str):
-            return jsonify(interaction_response(
-                "Color must be a hex string, such as #5865F2.",
+            return jsonify(response(
+                "Color must be a hex string, like #5865F2.",
                 ephemeral=True
             ))
 
         color_text = color_text.removeprefix("#")
-
         try:
             if len(color_text) != 6:
-                raise ValueError("Expected six hex digits.")
+                raise ValueError()
             color = int(color_text, 16)
         except ValueError:
-            return jsonify(interaction_response(
-                "Invalid color. Use a hex value such as #5865F2.",
+            return jsonify(response(
+                "Invalid color. Example: #5865F2",
                 ephemeral=True
             ))
 
@@ -210,18 +190,12 @@ def interactions():
             "description": description[:4096],
             "color": color
         }
+        return jsonify(response("", embeds=[embed]))
 
-        return jsonify(interaction_response(
-            "",
-            embeds=[embed]
-        ))
-
-    # /announce channel:<channel> message:<text>
-    # Administrator-only. Acknowledge immediately, then post.
     if command == "announce":
         if not is_admin(interaction):
-            return jsonify(interaction_response(
-                "You need the Administrator permission to use this command.",
+            return jsonify(response(
+                "Administrator permission is required.",
                 ephemeral=True
             ))
 
@@ -229,17 +203,17 @@ def interactions():
         message = options.get("message", "")
 
         if not channel_id or not isinstance(message, str) or not message.strip():
-            return jsonify(interaction_response(
-                "Provide a channel and a message.", ephemeral=True
+            return jsonify(response(
+                "Provide a channel and message.", ephemeral=True
             ))
 
         if not DISCORD_BOT_TOKEN:
-            return jsonify(interaction_response(
-                "The bot token is not configured on the server.",
+            return jsonify(response(
+                "DISCORD_BOT_TOKEN is not configured.",
                 ephemeral=True
             ))
 
-        # Acknowledge before making the Discord API request.
+        # Acknowledge within Discord's response deadline first.
         callback_url = (
             f"{DISCORD_API}/interactions/"
             f"{interaction['id']}/{interaction['token']}/callback"
@@ -256,7 +230,7 @@ def interactions():
             )
             callback.raise_for_status()
         except requests.RequestException:
-            app.logger.exception("Could not acknowledge announcement.")
+            app.logger.exception("Could not acknowledge announcement")
             return "", 500
 
         try:
@@ -272,22 +246,20 @@ def interactions():
                 timeout=8
             )
             posted.raise_for_status()
-
-            edit_original_response(
+            edit_original(
                 interaction,
                 f"Announcement sent to <#{channel_id}>."
             )
-
         except requests.RequestException:
-            app.logger.exception("Announcement failed.")
-            edit_original_response(
+            app.logger.exception("Announcement failed")
+            edit_original(
                 interaction,
-                "I couldn't send the announcement. Check the bot's channel permissions."
+                "Announcement failed. Check the bot's channel permissions."
             )
 
         return "", 200
 
-    return jsonify(interaction_response(
+    return jsonify(response(
         f"Unknown command: {command}",
         ephemeral=True
     ))
