@@ -12,8 +12,8 @@ from nacl.exceptions import BadSignatureError
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "6399df85c0f8af4d3bfc5dc0edaeb34165ba7865007f85988292adc36931229a")
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "MTU1OTQxMDk1MDI3MDg4NTk0OA.GFVwe1.gvTModgS4FWY3ornWXslzyld5qnU0KVTXOG1L8")
+DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_API = "https://discord.com/api/v10"
 
 # Discord interaction callback types
