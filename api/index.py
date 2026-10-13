@@ -9,9 +9,15 @@ from nacl.exceptions import BadSignatureError
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "")
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-DISCORD_API = "https://discord.com/api/v10"
+
+class BotInfo:
+    def __init__(self):
+        self.DiscordPublicKey: str = "6399df85c0f8af4d3bfc5dc0edaeb34165ba7865007f85988292adc36931229a"
+        self.DiscordBotToken: str = "MTU1OTQxMDk1MDI3MDg4NTk0OA.GFVwe1.gvTModgS4FWY3ornWXslzyld5qnU0KVTXOG1L8"
+        self.DiscordAPI: str = "https://discord.com/api/v10"
+
+
+Bot = BotInfo()
 
 PING = 1
 APPLICATION_COMMAND = 2
@@ -20,84 +26,86 @@ DEFERRED_CHANNEL_MESSAGE = 5
 EPHEMERAL = 64
 
 
-def response(content, ephemeral=False, embeds=None):
-    data = {"allowed_mentions": {"parse": []}}
+def MakeResponse(Content="", Ephemeral=False, Embeds=None):
+    Data = {"allowed_mentions": {"parse": []}}
 
-    if content:
-        data["content"] = str(content)[:2000]
+    if Content:
+        Data["content"] = str(Content)[:2000]
 
-    if ephemeral:
-        data["flags"] = EPHEMERAL
+    if Ephemeral:
+        Data["flags"] = EPHEMERAL
 
-    if embeds:
-        data["embeds"] = embeds
+    if Embeds:
+        Data["embeds"] = Embeds
 
-    return {"type": CHANNEL_MESSAGE, "data": data}
+    return {"type": CHANNEL_MESSAGE, "data": Data}
 
 
-def verify_signature():
-    if not DISCORD_PUBLIC_KEY:
-        app.logger.error("DISCORD_PUBLIC_KEY is missing")
+def VerifyDiscordRequest():
+    if not Bot.DiscordPublicKey:
+        app.logger.error("DISCORD_PUBLIC_KEY is not configured.")
         return False
 
-    signature = request.headers.get("X-Signature-Ed25519", "")
-    timestamp = request.headers.get("X-Signature-Timestamp", "")
+    Signature = request.headers.get("X-Signature-Ed25519", "")
+    Timestamp = request.headers.get("X-Signature-Timestamp", "")
 
-    if not signature or not timestamp:
+    if not Signature or not Timestamp:
         return False
 
     try:
-        key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
-        key.verify(
-            timestamp.encode("utf-8") + request.get_data(),
-            bytes.fromhex(signature)
+        Key = VerifyKey(bytes.fromhex(Bot.DiscordPublicKey))
+        Key.verify(
+            Timestamp.encode("utf-8") + request.get_data(),
+            bytes.fromhex(Signature)
         )
         return True
     except (BadSignatureError, ValueError, TypeError):
         return False
 
 
-def get_options(interaction):
+def GetOptions(Interaction):
     return {
-        item["name"]: item.get("value")
-        for item in interaction.get("data", {}).get("options", [])
+        Item["name"]: Item.get("value")
+        for Item in Interaction.get("data", {}).get("options", [])
     }
 
 
-def is_admin(interaction):
+def IsAdmin(Interaction):
     try:
-        permissions = int(
-            interaction.get("member", {}).get("permissions", "0")
+        Permissions = int(
+            Interaction.get("member", {}).get("permissions", "0")
         )
-        return bool(permissions & 8)
-    except (TypeError, ValueError):
+        return bool(Permissions & 8)
+    except (ValueError, TypeError):
         return False
 
 
-def edit_original(interaction, content):
+def EditOriginalResponse(Interaction, Content):
     try:
-        url = (
-            f"{DISCORD_API}/webhooks/"
-            f"{interaction['application_id']}/"
-            f"{interaction['token']}/messages/@original"
+        URL = (
+            f"{Bot.DiscordAPI}/webhooks/"
+            f"{Interaction['application_id']}/"
+            f"{Interaction['token']}/messages/@original"
         )
-        result = requests.patch(
-            url,
+
+        Result = requests.patch(
+            URL,
             json={
-                "content": content[:2000],
+                "content": Content[:2000],
                 "allowed_mentions": {"parse": []}
             },
             timeout=8
         )
-        result.raise_for_status()
+        Result.raise_for_status()
         return True
+
     except (requests.RequestException, KeyError):
-        app.logger.exception("Could not update interaction response")
+        app.logger.exception("Failed to update interaction response.")
         return False
 
 
 @app.route("/", methods=["GET"])
-def home():
+def Home():
     return jsonify({
         "name": "Discord Vercel Bot",
         "status": "online"
@@ -105,171 +113,187 @@ def home():
 
 
 @app.route("/api/test", methods=["GET"])
-def test():
+def Test():
     return jsonify({
         "status": "success",
-        "message": "API is working"
+        "message": "Discord bot API is working."
     })
 
 
-# Both routes are supported for different Vercel routing setups.
 @app.route("/api/interactions", methods=["GET", "POST"])
 @app.route("/interactions", methods=["GET", "POST"])
-def interactions():
-    # Browser health check. Discord uses signed POST requests.
+def Interactions():
+    # Browser health check
     if request.method == "GET":
         return jsonify({
             "status": "online",
-            "message": "Discord interactions endpoint is reachable"
-        }), 200
+            "message": "Discord interactions endpoint is reachable."
+        })
 
-    # Never process unsigned Discord interactions.
-    if not verify_signature():
+    # Verify all incoming Discord POST requests
+    if not VerifyDiscordRequest():
         return jsonify({"error": "Invalid Discord signature"}), 401
 
-    interaction = request.get_json(silent=True)
+    Interaction = request.get_json(silent=True)
 
-    if not isinstance(interaction, dict):
+    if not isinstance(Interaction, dict):
         return jsonify({"error": "Invalid JSON"}), 400
 
-    interaction_type = interaction.get("type")
+    InteractionType = Interaction.get("type")
 
-    # Discord endpoint verification handshake.
-    if interaction_type == PING:
+    # Discord endpoint verification
+    if InteractionType == PING:
         return jsonify({"type": PING})
 
-    if interaction_type != APPLICATION_COMMAND:
-        return jsonify({"error": "Unsupported interaction"}), 400
+    if InteractionType != APPLICATION_COMMAND:
+        return jsonify({"error": "Unsupported interaction type"}), 400
 
-    command = interaction.get("data", {}).get("name", "").lower()
-    options = get_options(interaction)
+    Command = Interaction.get("data", {}).get("name", "").lower()
+    Options = GetOptions(Interaction)
 
-    if command == "ping":
-        return jsonify(response("Pong! The bot is online."))
+    # /ping
+    if Command == "ping":
+        return jsonify(MakeResponse("Pong! The bot is online."))
 
-    if command == "say":
-        message = options.get("message", "")
-        if not isinstance(message, str) or not message.strip():
-            return jsonify(response(
-                "Enter a message.", ephemeral=True
-            ))
-        return jsonify(response(message))
+    # /say message:<text>
+    if Command == "say":
+        Message = Options.get("message", "")
 
-    if command == "embed":
-        title = options.get("title", "Announcement")
-        description = options.get("description", "")
-        color_text = options.get("color", "#5865F2")
-
-        if not isinstance(title, str) or not isinstance(description, str):
-            return jsonify(response("Invalid embed text.", ephemeral=True))
-
-        if not description.strip():
-            return jsonify(response(
-                "Enter an embed description.", ephemeral=True
+        if not isinstance(Message, str) or not Message.strip():
+            return jsonify(MakeResponse(
+                "Please provide a message.",
+                Ephemeral=True
             ))
 
-        if not isinstance(color_text, str):
-            return jsonify(response(
+        return jsonify(MakeResponse(Message))
+
+    # /embed title:<text> description:<text> color:<hex>
+    if Command == "embed":
+        Title = Options.get("title", "Announcement")
+        Description = Options.get("description", "")
+        ColorText = Options.get("color", "#5865F2")
+
+        if not isinstance(Title, str) or not isinstance(Description, str):
+            return jsonify(MakeResponse(
+                "Invalid embed text.",
+                Ephemeral=True
+            ))
+
+        if not Description.strip():
+            return jsonify(MakeResponse(
+                "Please provide an embed description.",
+                Ephemeral=True
+            ))
+
+        if not isinstance(ColorText, str):
+            return jsonify(MakeResponse(
                 "Color must be a hex string, like #5865F2.",
-                ephemeral=True
+                Ephemeral=True
             ))
 
-        color_text = color_text.removeprefix("#")
+        ColorText = ColorText.removeprefix("#")
+
         try:
-            if len(color_text) != 6:
+            if len(ColorText) != 6:
                 raise ValueError()
-            color = int(color_text, 16)
+            Color = int(ColorText, 16)
         except ValueError:
-            return jsonify(response(
+            return jsonify(MakeResponse(
                 "Invalid color. Example: #5865F2",
-                ephemeral=True
+                Ephemeral=True
             ))
 
-        embed = {
-            "title": title[:256],
-            "description": description[:4096],
-            "color": color
+        Embed = {
+            "title": Title[:256],
+            "description": Description[:4096],
+            "color": Color
         }
-        return jsonify(response("", embeds=[embed]))
 
-    if command == "announce":
-        if not is_admin(interaction):
-            return jsonify(response(
+        return jsonify(MakeResponse("", Embeds=[Embed]))
+
+    # /announce channel:<channel> message:<text>
+    if Command == "announce":
+        if not IsAdmin(Interaction):
+            return jsonify(MakeResponse(
                 "Administrator permission is required.",
-                ephemeral=True
+                Ephemeral=True
             ))
 
-        channel_id = options.get("channel")
-        message = options.get("message", "")
+        ChannelID = Options.get("channel")
+        Message = Options.get("message", "")
 
-        if not channel_id or not isinstance(message, str) or not message.strip():
-            return jsonify(response(
-                "Provide a channel and message.", ephemeral=True
+        if not ChannelID or not isinstance(Message, str) or not Message.strip():
+            return jsonify(MakeResponse(
+                "Provide a channel and a message.",
+                Ephemeral=True
             ))
 
-        if not DISCORD_BOT_TOKEN:
-            return jsonify(response(
+        if not Bot.DiscordBotToken:
+            return jsonify(MakeResponse(
                 "DISCORD_BOT_TOKEN is not configured.",
-                ephemeral=True
+                Ephemeral=True
             ))
 
-        # Acknowledge within Discord's response deadline first.
-        callback_url = (
-            f"{DISCORD_API}/interactions/"
-            f"{interaction['id']}/{interaction['token']}/callback"
+        # Acknowledge immediately so Discord's deadline is met
+        CallbackURL = (
+            f"{Bot.DiscordAPI}/interactions/"
+            f"{Interaction['id']}/{Interaction['token']}/callback"
         )
 
         try:
-            callback = requests.post(
-                callback_url,
+            Callback = requests.post(
+                CallbackURL,
                 json={
                     "type": DEFERRED_CHANNEL_MESSAGE,
                     "data": {"flags": EPHEMERAL}
                 },
                 timeout=5
             )
-            callback.raise_for_status()
+            Callback.raise_for_status()
+
         except requests.RequestException:
-            app.logger.exception("Could not acknowledge announcement")
+            app.logger.exception("Failed to acknowledge announcement.")
             return "", 500
 
         try:
-            posted = requests.post(
-                f"{DISCORD_API}/channels/{channel_id}/messages",
+            Posted = requests.post(
+                f"{Bot.DiscordAPI}/channels/{ChannelID}/messages",
                 headers={
-                    "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
+                    "Authorization": f"Bot {Bot.DiscordBotToken}"
                 },
                 json={
-                    "content": message[:2000],
+                    "content": Message[:2000],
                     "allowed_mentions": {"parse": []}
                 },
                 timeout=8
             )
-            posted.raise_for_status()
-            edit_original(
-                interaction,
-                f"Announcement sent to <#{channel_id}>."
+            Posted.raise_for_status()
+
+            EditOriginalResponse(
+                Interaction,
+                f"Announcement sent to <#{ChannelID}>."
             )
+
         except requests.RequestException:
-            app.logger.exception("Announcement failed")
-            edit_original(
-                interaction,
+            app.logger.exception("Announcement failed.")
+            EditOriginalResponse(
+                Interaction,
                 "Announcement failed. Check the bot's channel permissions."
             )
 
         return "", 200
 
-    return jsonify(response(
-        f"Unknown command: {command}",
-        ephemeral=True
+    return jsonify(MakeResponse(
+        f"Unknown command: {Command}",
+        Ephemeral=True
     ))
 
 
 @app.errorhandler(404)
-def not_found(_error):
+def NotFound(_Error):
     return jsonify({"error": "Not found"}), 404
 
 
 @app.errorhandler(500)
-def internal_error(_error):
+def InternalError(_Error):
     return jsonify({"error": "Internal server error"}), 500
