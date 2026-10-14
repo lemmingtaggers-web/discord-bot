@@ -12,16 +12,16 @@ if not all([BOT_TOKEN, APP_ID, GUILD_ID]):
 
 commands = [
     {
-        "name": "ping",
-        "description": "Check if the bot is online."
+        "name": "ACTIVITY",
+        "description": "CHECK IF THE BOT IS ONLINE"
     },
     {
-        "name": "say",
-        "description": "Make the bot send a message.",
+        "name": "",
+        "description": "",
         "options": [
             {
-                "name": "message",
-                "description": "The message to send.",
+                "name": "",
+                "description": "",
                 "type": 3,
                 "required": True
             }
@@ -29,7 +29,7 @@ commands = [
     },
     {
         "name": "embed",
-        "description": "Send an embed.",
+        "description": "",
         "options": [
             {
                 "name": "title",
